@@ -1,0 +1,63 @@
+
+# Archivos de entorno
+.env
+.env.local
+.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Conda
+.conda
+.conda-env
+
+# Virtual environment (venv/venv3)
+env/
+venv3/
+
+# Logs
+*.log
+
+# Drivers
+drivers/
+
+# Temporal files
+tmp/
+temp/
+*.tmp
+
+# Ejecutables (Windows)
+*.exe
+*.dll
+*.pyd
+
+# Scripts batch
+*.bat
+
+# Data
+data/
+data.sql
+
+# =========================================
+# EXCLUSIONES ESPECÍFICAS POR CARPETA
+# =========================================
+
+# Archivos dentro de .vscode/
+.vscode/*.code-search
+.vscode/settings.json
+.vscode/launch.json
+
+# Archivos dentro de drivers/
+#drivers/msedgedriver.exe
+drivers/*.exe
+drivers/*.dll
+drivers/*.log
+
+# Archivos dentro de .pytest_cache/
+.pytest_cache/

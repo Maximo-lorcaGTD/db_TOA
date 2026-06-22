@@ -1,0 +1,7 @@
+python-dotenv>=1.0,<2
+playwright>=1.45,<2
+openpyxl>=3.1,<4
+pandas>=2.2,<3
+requests>=2.31,<3
+psycopg[binary]>=3.2,<4
+tzdata>=2025.1
