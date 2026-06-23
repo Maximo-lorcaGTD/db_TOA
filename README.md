@@ -30,16 +30,6 @@ Cada archivo descargado se utiliza únicamente como archivo temporal. Después d
 
 Los archivos vacíos también se consideran válidos: se revisan, se contabilizan y se eliminan sin agregar filas al consolidado.
 
-## Requisitos
-
-- Windows 10 o Windows 11.
-- Python 3.11 o superior.
-- Microsoft Edge instalado.
-- Acceso válido a TOA.
-- Archivo `InputsTOA.xlsx` con las secciones activas.
-- Archivo Excel de monitoreo con la tabla `Ejecuciones`.
-- Acceso al webhook de Power Automate, cuando corresponda.
-
 ## Instalación
 
 Abre PowerShell dentro de la carpeta del proyecto y ejecuta:
