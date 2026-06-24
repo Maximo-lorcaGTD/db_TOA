@@ -1,0 +1,27 @@
+services:
+  toa-scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: toa-scheduler
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      TZ: ${TZ:-America/Santiago}
+      TOA_BROWSER_CHANNEL: ${TOA_BROWSER_CHANNEL:-chromium}
+      TOA_HEADLESS: ${TOA_HEADLESS:-true}
+      SCHEDULER_INTERVAL_MINUTES: ${SCHEDULER_INTERVAL_MINUTES:-30}
+      RUN_ON_START: ${RUN_ON_START:-true}
+      TOA_SCRIPT_PATH: ${TOA_SCRIPT_PATH:-/app/toa_proceso_mejorado.py}
+      SCHEDULER_STATE_FILE: ${SCHEDULER_STATE_FILE:-/data/toa_scheduler_state.json}
+      SCHEDULER_LOCK_FILE: ${SCHEDULER_LOCK_FILE:-/data/.toa_scheduler.lock}
+    volumes:
+      - ./data:/data
+    shm_size: "1gb"
+    healthcheck:
+      test: ["CMD", "python", "/app/healthcheck.py"]
+      interval: 1m
+      timeout: 10s
+      retries: 3
+      start_period: 5m

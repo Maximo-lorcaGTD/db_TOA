@@ -2,7 +2,7 @@
 
 Este proyecto automatiza el ingreso a Oracle Field Service (TOA), descarga los archivos correspondientes a las fechas y secciones configuradas, lee cada archivo, consolida la información en un único Excel y luego elimina los archivos temporales descargados.
 
-La solución utiliza **Playwright con Microsoft Edge**. No utiliza Selenium, EdgeDriver ni PostgreSQL.
+La solución utiliza **Playwright con Microsoft Edge**. No utiliza Selenium ni EdgeDriver. PostgreSQL, API TOA y Power Automate quedan como salidas opcionales configurables por `.env`.
 
 ## Flujo de ejecución
 
@@ -269,20 +269,10 @@ CLEAN_RUN_MANIFEST=false
 Con el entorno virtual activo:
 
 ```powershell
-py .\toa_descargas_postgresql.py
+py .\toa_proceso_mejorado.py
 ```
 
-Aunque el archivo todavía pueda conservar el nombre histórico `toa_descargas_postgresql.py`, esta versión del proceso no utiliza PostgreSQL. Se recomienda renombrarlo a:
-
-```text
-toa_descargas_playwright.py
-```
-
-Luego se ejecutaría con:
-
-```powershell
-py .\toa_descargas_playwright.py
-```
+El script activo del proyecto es `toa_proceso_mejorado.py`. No ejecutes copias antiguas ni archivos con sufijos como `(1)`, porque pueden quedar desactualizados.
 
 ## Ejecución cada 30 minutos
 
@@ -297,7 +287,7 @@ C:\RUTA\PROYECTO\.venv\Scripts\python.exe
 ### Agregar argumentos
 
 ```text
-C:\RUTA\PROYECTO\toa_descargas_playwright.py
+C:\RUTA\PROYECTO\toa_proceso_mejorado.py
 ```
 
 ### Iniciar en
@@ -309,6 +299,35 @@ C:\RUTA\PROYECTO
 Configura el desencadenador para repetirse cada 30 minutos.
 
 Antes de programarlo, comprueba manualmente que una ejecución completa termine correctamente.
+
+## Docker y GitHub Actions
+
+Para ejecutar el proceso en Docker usa `README_DOCKER.md`. El flujo recomendado es:
+
+1. Copiar `.env.docker.example` a `.env`.
+2. Completar credenciales, XPath, rutas y endpoints en `.env`.
+3. Crear la carpeta `data/`.
+4. Dejar los Excel operativos en `data/`, especialmente `InputsTOA.xlsx` y `Monitoreo.xlsx`.
+5. Levantar el contenedor con Docker Compose.
+
+Comandos base:
+
+```powershell
+Copy-Item .env.docker.example .env
+New-Item -ItemType Directory -Force data
+Copy-Item .\InputsTOA.xlsx .\data\InputsTOA.xlsx
+docker compose up -d --build
+docker compose logs -f toa-scheduler
+```
+
+El repositorio incluye el workflow `.github/workflows/docker-image.yml`. En cada pull request ejecuta tests y construye la imagen. En cada push a `main` publica la imagen en GitHub Container Registry:
+
+```text
+ghcr.io/OWNER/REPO:latest
+ghcr.io/OWNER/REPO:sha-<commit>
+```
+
+No subas `.env`, `data/`, credenciales ni Excel reales a GitHub. Esos archivos se entregan al contenedor cuando lo ejecutas.
 
 ## Errores frecuentes
 
@@ -364,3 +383,16 @@ Una ejecución exitosa debe finalizar con un resumen parecido a:
 ```
 
 Las cantidades son referenciales y dependen del rango de fechas y de las secciones activas en `InputsTOA.xlsx`.
+
+
+## Validación local
+
+Antes de ejecutar contra TOA o publicar datos, puedes validar que el código carga, que el esquema de 77 columnas está consistente y que las transformaciones base siguen funcionando:
+
+```powershell
+py -m compileall -q .
+py -m unittest discover -s tests
+py -c "import toa_proceso_mejorado as t; t.validate_api_schema(); print('OK esquema API')"
+```
+
+El script activo es `toa_proceso_mejorado.py`. La copia duplicada con sufijo `(1)` fue retirada para evitar ejecutar el archivo equivocado.

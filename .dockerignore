@@ -1,0 +1,13 @@
+.env
+data/
+salida_prueba_toa/
+toa_postgresql_snapshot/
+__pycache__/
+*.pyc
+*.pyo
+*.log
+.test_tmp/
+.git/
+.github/
+.vscode/
+.idea/

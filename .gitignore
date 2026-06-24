@@ -18,6 +18,7 @@ __pycache__/
 .conda-env
 
 # Virtual environment (venv/venv3)
+.venv/
 env/
 venv3/
 
@@ -31,6 +32,8 @@ drivers/
 tmp/
 temp/
 *.tmp
+.test_tmp/
+toa_proceso_mejorado (*).py
 
 # Ejecutables (Windows)
 *.exe
@@ -43,6 +46,10 @@ temp/
 # Data
 data/
 data.sql
+salida_prueba_toa/
+toa_runs/
+BBDD_TOA.xlsx
+Monitoreo.xlsx
 
 # =========================================
 # EXCLUSIONES ESPECÍFICAS POR CARPETA

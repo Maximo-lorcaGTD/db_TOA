@@ -1,25 +1,15 @@
-﻿import os
+from __future__ import annotations
+
+import os
 import sys
 import time
 import glob
 import shutil
 from uuid import uuid4
 from datetime import datetime, timedelta, timezone
-from urllib.parse import urlencode
-from configparser import ConfigParser
-import psycopg
 
-# --- Gestión de Variables de Entorno ---
 from dotenv import load_dotenv
-from configparser import ConfigParser
-from pathlib import Path
-from datetime import datetime, timedelta, timezone
-from urllib.parse import urlparse, parse_qs
-import psycopg
 
-
-
-# --- Automatización web con Playwright (Microsoft Edge / Chromium) ---
 from playwright.sync_api import (
     BrowserContext,
     Page,
@@ -27,12 +17,10 @@ from playwright.sync_api import (
     sync_playwright,
 )
 
-# --- Manejo de Excel (Openpyxl) ---
 from openpyxl import load_workbook, Workbook
 from openpyxl.utils import range_boundaries, get_column_letter
 from openpyxl.worksheet.table import Table, TableStyleInfo
 
-# --- Comunicación con Power Automate (Webhooks y Red) ---
 import base64
 import csv
 import io
@@ -42,8 +30,12 @@ import unicodedata
 import zipfile
 import pandas as pd
 import requests
-import psycopg
-from psycopg import sql
+try:
+    import psycopg
+    from psycopg import sql
+except ImportError:
+    psycopg = None
+    sql = None
 
 
 # =========================
@@ -76,10 +68,12 @@ COLUMN_MAPPING = {
     "Correo": "correo",
     "Account Number": "account_number",
     "Work Zone": "work_zone",
+    "Segmento": "segmento",
     "Activity ID": "activity_id",
     "Activity Time of Booking": "activity_time_of_booking",
     "Motivo de suspensión de actividad": "motivo_suspension_actividad",
     "Motivo de cancelación de actividad": "motivo_cancelacion_actividad",
+    "Motivo de cancelación de activida": "motivo_cancelacion_actividad",
     "FIIL": "fiil",
     "Tipo de Fiil": "tipo_fiil",
     "Recurso Logico": "recurso_logico",
@@ -96,6 +90,7 @@ COLUMN_MAPPING = {
     "ID_Servicio9": "id_servicio9",
     "ID_Servicio10": "id_servicio10",
     "ID_Servicio": "id_servicio",
+    "ID Servicio": "id_servicio",
     "CS Enlace": "cs_enlace",
     "CS Equipo": "cs_equipo",
     "CS Telefonía": "cs_telefonia",
@@ -109,6 +104,7 @@ COLUMN_MAPPING = {
     "Pre Clasificación Detalle": "pre_clasificacion_detalle",
     "Prioridad": "prioridad",
     "Time Slot": "time_slot",
+    "Horario de Atención": "time_slot",
     "Folio Subtel": "folio_subtel",
     "Tipo de reclamo masivo": "tipo_reclamo_masivo",
     "Tipo de servicio": "tipo_servicio",
@@ -125,8 +121,88 @@ COLUMN_MAPPING = {
     "Solucion": "solucion",
     "Comuna": "comuna",
     "Subgrupo TOA": "subgrupo_toa",
-    "Zona Subgrupo TOA": "zona_subgrupo_toa"
+    "Zona Subgrupo TOA": "zona_subgrupo_toa",
 }
+
+API_HEADERS = [
+    "resource",
+    "nombre",
+    "nombre_contacto",
+    "date",
+    "activity_type",
+    "lugar_reparacion",
+    "reparacion_nodo",
+    "reparacion_dc",
+    "activity_status",
+    "identificador_numero_reclamo",
+    "id_ticket",
+    "work_order",
+    "start",
+    "end",
+    "start_end",
+    "traveling_time",
+    "duration",
+    "name",
+    "id_ruta",
+    "address",
+    "city",
+    "state",
+    "telefono",
+    "correo",
+    "account_number",
+    "segmento",
+    "work_zone",
+    "activity_id",
+    "activity_time_of_booking",
+    "motivo_suspension_actividad",
+    "motivo_cancelacion_actividad",
+    "fiil",
+    "tipo_fiil",
+    "recurso_logico",
+    "metraje",
+    "zona",
+    "id_servicio1",
+    "id_servicio2",
+    "id_servicio3",
+    "id_servicio4",
+    "id_servicio5",
+    "id_servicio6",
+    "id_servicio7",
+    "id_servicio8",
+    "id_servicio9",
+    "id_servicio10",
+    "id_servicio",
+    "cs_enlace",
+    "cs_equipo",
+    "cs_telefonia",
+    "numero_ot",
+    "estado_ot",
+    "identificador_reclamo_masivo",
+    "area_resolutora",
+    "descripcion_servicio",
+    "folio_externo",
+    "tipo_cliente",
+    "pre_clasificacion_detalle",
+    "prioridad",
+    "time_slot",
+    "folio_subtel",
+    "tipo_reclamo_masivo",
+    "tipo_servicio",
+    "cable",
+    "filamento",
+    "nivel1",
+    "nivel2",
+    "nivel3",
+    "razon_completacion",
+    "intervencion_planta_externa",
+    "ticket_trazabilidad",
+    "causa_falla",
+    "area_elemento",
+    "solucion",
+    "comuna",
+    "subgrupo_toa",
+    "zona_subgrupo_toa",
+]
 
 
 ACTIVITY_TYPE_ALLOWED_VALUES = [
@@ -139,148 +215,137 @@ ACTIVITY_TYPE_ALLOWED_VALUES = [
     "Habilitación de servicio",
 ]
 
-## APIS 
 
-def vaciar_tabla(session: requests.Session) -> None:
-    """
-    Vacía la tabla antes de comenzar a cargar los registros.
-    """
+SOURCE_HEADER_ALIASES = {
+    "Recurso": "Resource",
+    "Fecha": "Date",
+    "Tipo de actividad": "Activity Type",
+    "Estado de actividad": "Activity Status",
+    "Orden de trabajo": "Work Order",
+    "Inicio": "Start",
+    "Finalización": "End",
+    "Inicio - Fin": "Start - End",
+    "Inicio – Fin": "Start - End",
+    "Inicio — Fin": "Start - End",
+    "Tiempo de viaje": "Traveling Time",
+    "Duración": "Duration",
+    "Dirección": "Address",
+    "Ciudad": "City",
+    "Estado": "State",
+    "Número de cuenta": "Account Number",
+    "Zona de trabajo": "Work Zone",
+    "ID de actividad": "Activity ID",
+    "Fecha Recepción": "Activity Time of Booking",
+    "Fecha de Recepción": "Activity Time of Booking",
+    "ID Servicio": "ID_Servicio",
+    "CS Telefonia": "CS Telefonía",
+    "Solución": "Solucion",
+}
 
-    print("Vaciando tabla TOA...")
 
-    respuesta = session.post(
-        URL_VACIAR_TABLA,
-        headers=HEADERS,
-        timeout=TIMEOUT_SEGUNDOS,
-    )
+def validate_api_schema() -> None:
+    """Valida la definición local antes de procesar o publicar información."""
+    expected_count = 77
+    duplicates = sorted({
+        column for column in API_HEADERS
+        if API_HEADERS.count(column) > 1
+    })
 
-    if not respuesta.ok:
+    if len(API_HEADERS) != expected_count:
         raise RuntimeError(
-            f"No se pudo vaciar la tabla.\n"
-            f"HTTP: {respuesta.status_code}\n"
-            f"Respuesta: {respuesta.text}"
+            f"API_HEADERS debe contener {expected_count} variables; "
+            f"actualmente contiene {len(API_HEADERS)}."
+        )
+    if duplicates:
+        raise RuntimeError(
+            f"API_HEADERS contiene variables duplicadas: {duplicates}"
         )
 
-    print(
-        f"Tabla vaciada correctamente. "
-        f"HTTP {respuesta.status_code}"
-    )
-
-
-def enviar_lote(
-    session: requests.Session,
-    lote: list[dict],
-    numero_lote: int,
-    total_lotes: int,
-    intentos_maximos: int = 3,
-) -> None:
-    """
-    Envía un lote de registros. Reintenta cuando ocurre un error temporal.
-    """
-
-    for intento in range(1, intentos_maximos + 1):
-        try:
-            # Se asume que la API recibe directamente un arreglo JSON:
-            # [
-            #     {"campo1": "valor1", ...},
-            #     {"campo1": "valor2", ...}
-            # ]
-            respuesta = session.post(
-                URL_CREAR_CITA,
-                headers=HEADERS,
-                json=lote,
-                timeout=TIMEOUT_SEGUNDOS,
-            )
-
-            if respuesta.ok:
-                print(
-                    f"Lote {numero_lote}/{total_lotes} enviado: "
-                    f"{len(lote)} registros | "
-                    f"HTTP {respuesta.status_code}"
-                )
-                return
-
-            print(
-                f"Error en lote {numero_lote}/{total_lotes}. "
-                f"Intento {intento}/{intentos_maximos}. "
-                f"HTTP {respuesta.status_code}: {respuesta.text}"
-            )
-
-            # No reintenta errores de datos o autorización
-            if respuesta.status_code in {400, 401, 403, 404, 422}:
-                raise RuntimeError(
-                    f"La API rechazó el lote {numero_lote}.\n"
-                    f"HTTP: {respuesta.status_code}\n"
-                    f"Respuesta: {respuesta.text}"
-                )
-
-        except requests.RequestException as error:
-            print(
-                f"Problema de conexión en lote {numero_lote}. "
-                f"Intento {intento}/{intentos_maximos}: {error}"
-            )
-
-        if intento < intentos_maximos:
-            espera = intento * 3
-            print(f"Reintentando en {espera} segundos...")
-            time.sleep(espera)
-
-    raise RuntimeError(
-        f"No fue posible enviar el lote {numero_lote} "
-        f"después de {intentos_maximos} intentos."
-    )
-TAMANO_LOTE = 300
-def cargar_dataframe_toa(
-    df: pd.DataFrame,
-    tamano_lote: int = TAMANO_LOTE,
-) -> None:
-    """
-    1. Valida el DataFrame.
-    2. Vacía la tabla.
-    3. Envía el DataFrame en lotes.
-    """
-
-    if df is None or df.empty:
-        raise ValueError(
-            "El DataFrame está vacío. No se vaciará la tabla ni se enviarán datos."
+    mapped_targets = set(COLUMN_MAPPING.values())
+    unknown_targets = sorted(mapped_targets - set(API_HEADERS))
+    if unknown_targets:
+        raise RuntimeError(
+            "COLUMN_MAPPING apunta a variables que no existen en API_HEADERS: "
+            + ", ".join(unknown_targets)
         )
 
-    registros = dataframe_a_registros(df)
 
-    total_registros = len(registros)
-    total_lotes = (
-        total_registros + tamano_lote - 1
-    ) // tamano_lote
+def _normalized_text(value) -> str:
+    """Normaliza espacios y Unicode para comparaciones estables."""
+    if value is None:
+        return ""
+    return unicodedata.normalize("NFKC", str(value)).strip()
 
-    print("=" * 60)
-    print(f"Registros que se enviarán: {total_registros}")
-    print(f"Tamaño máximo por lote: {tamano_lote}")
-    print(f"Cantidad total de lotes: {total_lotes}")
-    print("=" * 60)
 
-    with requests.Session() as session:
-        # Se vacía solamente una vez
-        vaciar_tabla(session)
+def _normalize_download_headers(columns) -> list[str]:
+    """
+    Normaliza encabezados de XLSX/CSV.
 
-        # Después se envían todos los lotes
-        for numero_lote, lote in enumerate(
-            dividir_en_lotes(registros, tamano_lote),
-            start=1,
-        ):
-            enviar_lote(
-                session=session,
-                lote=lote,
-                numero_lote=numero_lote,
-                total_lotes=total_lotes,
-            )
+    Pandas cambia encabezados repetidos como "Nombre" a "Nombre.1". Cuando
+    existen dos, el primero corresponde a "Name" y el segundo a "Nombre".
+    """
+    cleaned = [_normalized_text(column).replace("\ufeff", "") for column in columns]
+    nombre_positions = [
+        index for index, column in enumerate(cleaned)
+        if re.fullmatch(r"Nombre(?:\.\d+)?", column, flags=re.IGNORECASE)
+    ]
 
-            if numero_lote < total_lotes:
-                time.sleep(ESPERA_ENTRE_LOTES)
+    result = []
+    nombre_seen = 0
+    for index, column in enumerate(cleaned):
+        base = re.sub(r"\.\d+$", "", column)
 
-    print("=" * 60)
-    print("Carga terminada correctamente.")
-    print(f"Total enviado: {total_registros} registros.")
-    print("=" * 60)
+        if index in nombre_positions and len(nombre_positions) > 1:
+            nombre_seen += 1
+            result.append("Name" if nombre_seen == 1 else "Nombre")
+            continue
+
+        if not column:
+            result.append(f"columna_{index + 1}")
+            continue
+
+        canonical = SOURCE_HEADER_ALIASES.get(column)
+        if canonical is None:
+            canonical = SOURCE_HEADER_ALIASES.get(base, column)
+
+        # Variantes ID Servicio1 ... ID Servicio10.
+        match = re.fullmatch(r"ID Servicio(\d{1,2})", canonical)
+        if match:
+            canonical = f"ID_Servicio{match.group(1)}"
+
+        result.append(canonical)
+
+    return result
+
+
+def _coalesce_duplicate_columns(dataframe: pd.DataFrame) -> pd.DataFrame:
+    """Combina columnas repetidas tomando el primer valor no nulo por fila."""
+    if not dataframe.columns.duplicated().any():
+        return dataframe
+
+    ordered_names = list(dict.fromkeys(dataframe.columns))
+    merged = {}
+
+    for name in ordered_names:
+        subset = dataframe.loc[:, dataframe.columns == name]
+        if subset.shape[1] == 1:
+            merged[name] = subset.iloc[:, 0]
+        else:
+            merged[name] = subset.bfill(axis=1).iloc[:, 0]
+
+    return pd.DataFrame(merged, index=dataframe.index)
+
+
+def _activity_type_mask(series: pd.Series) -> pd.Series:
+    """Compara tipos de actividad ignorando espacios, mayúsculas y Unicode."""
+    allowed = {
+        _normalized_text(value).casefold()
+        for value in ACTIVITY_TYPE_ALLOWED_VALUES
+    }
+    return series.map(
+        lambda value: _normalized_text(value).casefold()
+    ).isin(allowed)
+
 
 
 # =========================
@@ -1667,6 +1732,9 @@ def db_value(value):
 
 
 def pg_connection():
+    if psycopg is None:
+        raise RuntimeError("psycopg no está instalado. Instálalo solo si usarás PostgreSQL: pip install psycopg[binary]")
+
     dsn = os.getenv("PG_DSN")
     if dsn:
         return psycopg.connect(dsn, autocommit=True)
@@ -1897,49 +1965,71 @@ def publish_postgres_snapshot(
         conn.close()
 
 
+
 def consume_downloaded_xlsx(
     xlsx_path: str,
     subgroup: str,
     zona_subgrupo: str,
-    headers: list[str],
+    api_headers: list[str] | None = None,
 ) -> pd.DataFrame:
     """
-    Lee el Excel, valida sus encabezados exactos y filtra Activity Type.
-
-    El archivo no se elimina aquí: la limpieza se realiza únicamente cuando
-    la ejecución completa termina correctamente.
+    Lee una descarga de TOA, filtra los tipos permitidos y transforma sus
+    encabezados a las variables esperadas por la API.
     """
+    validate_api_schema()
+    api_headers = api_headers or API_HEADERS
+
     try:
-        source_df = pd.read_excel(xlsx_path, engine="openpyxl")
+        source_df = pd.read_excel(
+            xlsx_path,
+            engine="openpyxl",
+            dtype=object,
+        )
     except Exception as exc:
         raise RuntimeError(
             f"No se pudo leer el archivo '{xlsx_path}': {exc!r}"
         ) from exc
 
+    source_df.columns = _normalize_download_headers(source_df.columns)
+
     required_columns = ["Date", "Activity Type"]
     missing_columns = [
-        column for column in required_columns if column not in source_df.columns
+        column for column in required_columns
+        if column not in source_df.columns
     ]
     if missing_columns:
         raise ValueError(
-            f"Archivo sin columna(s) obligatoria(s) con nombre exacto "
-            f"{missing_columns}: {xlsx_path}. "
-            f"Encabezados detectados: {list(source_df.columns)}"
+            f"Archivo sin columna(s) obligatoria(s) {missing_columns}: "
+            f"{xlsx_path}. Encabezados detectados: {list(source_df.columns)}"
         )
 
+    source_rows = len(source_df)
     filtered_df = source_df[
-        source_df["Activity Type"].isin(ACTIVITY_TYPE_ALLOWED_VALUES)
+        _activity_type_mask(source_df["Activity Type"])
     ].copy()
+
     filtered_df["Subgrupo TOA"] = subgroup
     filtered_df["Zona Subgrupo TOA"] = zona_subgrupo
-    filtered_df = filtered_df.reindex(columns=headers)
+
+    filtered_df.rename(columns=COLUMN_MAPPING, inplace=True)
+    filtered_df = _coalesce_duplicate_columns(filtered_df)
+
+    # reindex crea automáticamente los campos ausentes como NaN.
+    filtered_df = filtered_df.reindex(columns=api_headers)
+
+    if list(filtered_df.columns) != list(api_headers):
+        raise RuntimeError(
+            "El DataFrame transformado no conserva el orden requerido por la API."
+        )
 
     print(
-        f"[FILTRO] {os.path.basename(xlsx_path)} | "
-        f"registros origen: {len(source_df)} | "
-        f"registros permitidos: {len(filtered_df)}"
+        f"[FILTRO/API] {os.path.basename(xlsx_path)} | "
+        f"registros origen: {source_rows} | "
+        f"registros permitidos: {len(filtered_df)} | "
+        f"columnas API: {len(filtered_df.columns)}"
     )
     return filtered_df
+
 
 
 def dataframe_to_rows(dataframe: pd.DataFrame) -> list[list]:
@@ -2011,6 +2101,7 @@ def save_manifest(run_dir: str, execution_id, inicio, expected_files: int, manif
 # =========================
 def run_process(cleanup_state: dict):
     load_dotenv()
+    validate_api_schema()
 
     USER = os.getenv("TOA_USERNAME")
     PASS = os.getenv("TOA_PASSWORD")
@@ -2048,6 +2139,12 @@ def run_process(cleanup_state: dict):
     RUTA_EXC = os.getenv("RUTA_EXC_MONITOREO")
     RUTA_BBDD_TOA = os.getenv("RUTA_BBDD_TOA")
     RUTA_INPUTS = os.getenv("RUTA_INPUTS_TOA")
+
+    # Publicaciones finales. La API es el destino principal solicitado;
+    # PostgreSQL queda opcional para mantener compatibilidad con el script anterior.
+    API_ENABLED = env_bool("TOA_API_ENABLED", False)
+    PG_ENABLED = env_bool("PG_ENABLED", False)
+
     RUNS_DIR = os.getenv("TOA_RUNS_DIR") or os.path.join(os.path.dirname(RUTA_BBDD_TOA or "."), "toa_runs")
     DOWNLOAD_DIR = os.getenv("DOWNLOAD_DIR") or os.path.join(RUNS_DIR, "downloads")
     SHEET_EXC = "Ejecuciones"
@@ -2174,7 +2271,7 @@ def run_process(cleanup_state: dict):
                         downloaded_path,
                         subgrupo,
                         zona_subgrupo,
-                        COLUMN_MAPPING,
+                        API_HEADERS,
                     )
 
                     dataframes_filtrados.append(filtered_df)
@@ -2283,20 +2380,24 @@ def run_process(cleanup_state: dict):
     if download_errors or len(manifest) != expected_files:
         error_message = (
             f"Fotografía incompleta: {len(manifest)}/{expected_files} archivos. "
-            "PostgreSQL no fue modificado."
+            "La API no fue vaciada ni modificada."
         )
-        try:
-            with pg_connection() as conn:
-                schema, _, _, runs, _ = ensure_postgres_objects(conn, COLUMN_MAPPING)
-                register_run(
-                    conn, schema, runs, execution_id, inicio,
-                    expected_files, len(manifest), 0, 0, 0,
-                    "ERROR_DESCARGA",
-                    error_message + "\n" + "\n".join(download_errors),
-                    finished=True,
+        if PG_ENABLED:
+            try:
+                with pg_connection() as conn:
+                    schema, _, _, runs, _ = ensure_postgres_objects(conn, API_HEADERS)
+                    register_run(
+                        conn, schema, runs, execution_id, inicio,
+                        expected_files, len(manifest), 0, 0, 0,
+                        "ERROR_DESCARGA",
+                        error_message + "\n" + "\n".join(download_errors),
+                        finished=True,
+                    )
+            except Exception as exc:
+                print(
+                    f"[POSTGRESQL] No se pudo registrar el error: {exc!r}",
+                    file=sys.stderr,
                 )
-        except Exception as exc:
-            print(f"[POSTGRESQL] No se pudo registrar el error: {exc!r}", file=sys.stderr)
 
         try:
             update_last_row_fields_atomic(
@@ -2312,9 +2413,9 @@ def run_process(cleanup_state: dict):
 
     if dataframes_filtrados:
         df_consolidado = pd.concat(dataframes_filtrados, ignore_index=True)
-        df_consolidado = df_consolidado.reindex(columns=COLUMN_MAPPING)
+        df_consolidado = df_consolidado.reindex(columns=API_HEADERS)
     else:
-        df_consolidado = pd.DataFrame(columns=COLUMN_MAPPING)
+        df_consolidado = pd.DataFrame(columns=API_HEADERS)
 
     rows = dataframe_to_rows(df_consolidado)
     print(f"[CONSOLIDADO] Total de registros: {len(df_consolidado)}")
@@ -2326,52 +2427,107 @@ def run_process(cleanup_state: dict):
     for subgroup, row_count in rows_by_subgroup.items():
         print(f"  - {subgroup}: {row_count} filas")
 
-    # El Excel es un artefacto de salida; la publicación PostgreSQL usa las filas en memoria.
-    write_snapshot_excel(RUTA_BBDD_TOA, COLUMN_MAPPING, rows)
+    # El Excel consolidado se genera antes de tocar la API. De esta forma,
+    # cualquier error de transformación ocurre antes del vaciado remoto.
+    write_snapshot_excel(RUTA_BBDD_TOA, API_HEADERS, rows)
+    api_records = dataframe_to_api_records(df_consolidado)
 
-    postgres_ok = False
-    postgres_error = ""
-    try:
-        publish_postgres_snapshot(
-            rows,
-            COLUMN_MAPPING,
-            execution_id,
-            inicio,
-            expected_files,
-            len(manifest),
-            empty_files,
-            data_files,
+    api_ok = True
+    api_error = ""
+    api_result = {
+        "habilitada": API_ENABLED,
+        "total_registros": len(api_records),
+    }
+
+    if API_ENABLED:
+        try:
+            api_result.update(
+                publicar_toa_api_por_lotes(
+                    records=api_records,
+                    failure_dir=run_dir,
+                )
+            )
+            api_summary_path = os.path.join(run_dir, "resultado_publicacion_api.json")
+            with open(api_summary_path, "w", encoding="utf-8") as file:
+                json.dump(api_result, file, ensure_ascii=False, indent=2)
+            print(f"[API] Resumen guardado en: {api_summary_path}")
+        except Exception as exc:
+            api_ok = False
+            api_error = repr(exc)
+            print(f"[API] ERROR: {api_error}", file=sys.stderr)
+    else:
+        print(
+            "[API] Publicación desactivada. Configura TOA_API_ENABLED=true "
+            "para vaciar y cargar la API por lotes."
         )
-        postgres_ok = True
-    except Exception as exc:
-        postgres_error = repr(exc)
-        print(f"[POSTGRESQL] ERROR: {postgres_error}", file=sys.stderr)
 
-    webhook_ok = False
-    if postgres_ok and env_bool("PA_ENABLED", True):
+    # PostgreSQL se conserva como salida opcional. Ya no bloquea el uso de la API
+    # cuando PG_ENABLED=false.
+    postgres_ok = True
+    postgres_error = ""
+    if api_ok and PG_ENABLED:
+        postgres_ok = False
+        try:
+            if psycopg is None:
+                raise RuntimeError(
+                    "PG_ENABLED=true, pero psycopg no está instalado. "
+                    "Instálalo o configura PG_ENABLED=false."
+                )
+            publish_postgres_snapshot(
+                rows,
+                API_HEADERS,
+                execution_id,
+                inicio,
+                expected_files,
+                len(manifest),
+                empty_files,
+                data_files,
+            )
+            postgres_ok = True
+        except Exception as exc:
+            postgres_error = repr(exc)
+            print(f"[POSTGRESQL] ERROR: {postgres_error}", file=sys.stderr)
+    elif not PG_ENABLED:
+        print("[POSTGRESQL] Publicación desactivada mediante PG_ENABLED=false.")
+
+    webhook_ok = True
+    webhook_error = ""
+    if api_ok and postgres_ok and env_bool("PA_ENABLED", False):
         webhook_ok = enviar_a_power_automate()
-    elif postgres_ok:
-        webhook_ok = True
+        if not webhook_ok:
+            webhook_error = "Power Automate rechazó o no recibió el archivo."
 
+    publication_errors = []
+    if not api_ok:
+        publication_errors.append(f"API: {api_error}")
+    if not postgres_ok:
+        publication_errors.append(f"PostgreSQL: {postgres_error}")
+    if not webhook_ok:
+        publication_errors.append(f"Power Automate: {webhook_error}")
+
+    publication_ok = api_ok and postgres_ok and webhook_ok
     try:
         update_last_row_fields_atomic(
             RUTA_EXC,
             SHEET_EXC,
             TABLE_EXC,
             {
-                "Resultado_Consolidado": "Exitoso" if postgres_ok else "Error PostgreSQL",
-                "Obs_Consolidado": "" if postgres_ok else postgres_error,
+                "Resultado_Consolidado": "Exitoso" if publication_ok else "Error publicación",
+                "Obs_Consolidado": "\n".join(publication_errors),
             },
         )
     except Exception as exc:
         print(f"[MONITOREO] No se pudo actualizar consolidado: {exc!r}", file=sys.stderr)
 
-    if not postgres_ok:
-        raise RuntimeError(f"No fue posible publicar PostgreSQL: {postgres_error}")
+    if not publication_ok:
+        raise RuntimeError(
+            "No fue posible completar la publicación final: "
+            + " | ".join(publication_errors)
+        )
 
     # Los archivos descargados se eliminan al finalizar satisfactoriamente.
-    # La carpeta de ejecución conserva manifest.json para auditoría.
-    if webhook_ok and env_bool("CLEAN_RUN_MANIFEST", False):
+    # La carpeta de ejecución conserva manifest.json y el resumen de API.
+    if env_bool("CLEAN_RUN_MANIFEST", False):
         try:
             shutil.rmtree(run_dir)
             print("[LIMPIEZA] Carpeta de manifiesto eliminada.")
@@ -2379,6 +2535,644 @@ def run_process(cleanup_state: dict):
             print(f"[LIMPIEZA] No se pudo eliminar {run_dir}: {exc!r}", file=sys.stderr)
 
     cleanup_state["proceso_completado"] = True
+
+
+
+def api_json_value(value):
+    """Convierte valores de pandas/Python a tipos JSON válidos."""
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    if isinstance(value, pd.Timestamp):
+        return value.isoformat()
+    if isinstance(value, pd.Timedelta):
+        return str(value)
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if hasattr(value, "item"):
+        try:
+            return value.item()
+        except Exception:
+            pass
+    return value
+
+
+
+def dataframe_to_api_records(dataframe: pd.DataFrame) -> list[dict]:
+    """Convierte y valida el DataFrame final para requests.post(json=...)."""
+    validate_api_schema()
+
+    ordered = dataframe.reindex(columns=API_HEADERS)
+    records = []
+
+    for row_number, raw_record in enumerate(
+        ordered.to_dict(orient="records"),
+        start=1,
+    ):
+        record = {
+            key: api_json_value(raw_record.get(key))
+            for key in API_HEADERS
+        }
+
+        if list(record.keys()) != API_HEADERS:
+            raise RuntimeError(
+                f"El registro {row_number} no conserva las 77 claves en orden."
+            )
+
+        # Detecta valores no serializables y NaN/Infinity antes de vaciar la API.
+        try:
+            json.dumps(record, ensure_ascii=False, allow_nan=False)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"Registro {row_number} no es JSON válido: {exc}"
+            ) from exc
+
+        records.append(record)
+
+    return records
+
+
+
+def _normalize_api_url(url: str) -> str:
+    """Agrega http:// cuando la URL fue configurada solo con IP/ruta."""
+    url = str(url or "").strip()
+    if url and not re.match(r"^https?://", url, flags=re.IGNORECASE):
+        url = f"http://{url}"
+    return url.rstrip("/")
+
+
+def _toa_api_headers() -> dict[str, str]:
+    """Construye los encabezados comunes para los endpoints TOA."""
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    }
+
+    token = (os.getenv("TOA_API_TOKEN") or "").strip()
+    api_key = (os.getenv("TOA_API_KEY") or "").strip()
+
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    if api_key:
+        headers["X-API-Key"] = api_key
+
+    return headers
+
+
+def _api_response_preview(response: requests.Response, limit: int = 1500) -> str:
+    """Obtiene una respuesta breve, incluyendo JSON cuando está disponible."""
+    if not response.content:
+        return "<sin contenido>"
+    try:
+        return json.dumps(response.json(), ensure_ascii=False)[:limit]
+    except Exception:
+        return response.text[:limit]
+
+
+
+def _post_api_json(
+    session: requests.Session,
+    url: str,
+    payload,
+    operation: str,
+    retries: int = 1,
+) -> requests.Response:
+    """
+    Ejecuta POST, valida HTTP y registra duración.
+
+    Para crear registros se recomienda retries=1, ya que el endpoint podría
+    haber procesado el lote aunque el cliente haya perdido la respuesta.
+    """
+    timeout = max(1, int(os.getenv("TOA_API_TIMEOUT", "120")))
+    retry_wait = max(
+        0.0,
+        float(os.getenv("TOA_API_RETRY_WAIT_SECONDS", "2")),
+    )
+    retry_statuses = {408, 429, 500, 502, 503, 504}
+    attempts = max(1, retries)
+    last_error = None
+
+    for attempt in range(1, attempts + 1):
+        started = time.monotonic()
+        try:
+            response = session.post(
+                url,
+                json=payload,
+                timeout=timeout,
+            )
+            elapsed = time.monotonic() - started
+            preview = _api_response_preview(response)
+
+            print(
+                f"[API][{operation}] intento {attempt}/{attempts} | "
+                f"HTTP {response.status_code} | {elapsed:.2f}s | {preview}"
+            )
+
+            if 200 <= response.status_code < 300:
+                return response
+
+            error = RuntimeError(
+                f"{operation} rechazado con HTTP "
+                f"{response.status_code}: {preview}"
+            )
+            last_error = error
+
+            if (
+                response.status_code not in retry_statuses
+                or attempt >= attempts
+            ):
+                raise error
+
+        except requests.RequestException as exc:
+            last_error = exc
+            if attempt >= attempts:
+                raise RuntimeError(
+                    f"Error de red durante {operation}: {exc!r}"
+                ) from exc
+
+        if attempt < attempts and retry_wait > 0:
+            time.sleep(retry_wait * attempt)
+
+    raise RuntimeError(
+        f"No fue posible completar {operation}: {last_error!r}"
+    )
+
+
+
+def vaciar_tabla_toa_api(session: requests.Session) -> requests.Response:
+    """Vacía la tabla remota antes de publicar la nueva fotografía."""
+    url = _normalize_api_url(
+        os.getenv("TOA_API_EMPTY_URL")
+        or "http://216.155.78.14/api/toa/vaciar-tabla-toa"
+    )
+    if not url:
+        raise RuntimeError("Falta TOA_API_EMPTY_URL")
+
+    retries = int(os.getenv("TOA_API_EMPTY_RETRIES", "3"))
+    print(f"[API] Vaciando tabla mediante: {url}")
+    return _post_api_json(
+        session=session,
+        url=url,
+        payload={},
+        operation="VACIAR TABLA",
+        retries=retries,
+    )
+
+
+def _save_failed_api_batch(
+    failure_dir: str,
+    batch_number: int,
+    batch_records: list[dict],
+    error: Exception,
+) -> str:
+    """Guarda el lote fallido para revisión o reenvío manual."""
+    ensure_dir(failure_dir)
+    path = os.path.join(
+        failure_dir,
+        f"lote_api_fallido_{batch_number:04d}.json",
+    )
+    payload = {
+        "lote": batch_number,
+        "cantidad_registros": len(batch_records),
+        "error": repr(error),
+        "registros": batch_records,
+    }
+    with open(path, "w", encoding="utf-8") as file:
+        json.dump(payload, file, ensure_ascii=False, indent=2)
+    return path
+
+
+
+def publicar_toa_api_por_lotes(
+    records: list[dict],
+    failure_dir: str,
+) -> dict:
+    """
+    Publica la fotografía completa en la API TOA.
+
+    La tabla solo se vacía después de validar todos los registros.
+    """
+    validate_api_schema()
+    ensure_dir(failure_dir)
+
+    create_url = _normalize_api_url(
+        os.getenv("TOA_API_CREATE_URL")
+        or os.getenv("TOA_API_URL")
+        or "http://216.155.78.14/api/toa/crear-cita-toa"
+    )
+    if not create_url:
+        raise RuntimeError("Falta TOA_API_CREATE_URL")
+
+    configured_batch_size = int(
+        os.getenv("TOA_API_BATCH_SIZE", "400")
+    )
+    if configured_batch_size <= 0:
+        raise ValueError("TOA_API_BATCH_SIZE debe ser mayor que 0")
+
+    batch_size = min(configured_batch_size, 400)
+    if configured_batch_size > 400:
+        print(
+            f"[API] TOA_API_BATCH_SIZE={configured_batch_size} supera "
+            "el máximo; se utilizarán lotes de 400."
+        )
+
+    # Evita destruir la fotografía vigente por una transformación sin filas.
+    if not records and not env_bool(
+        "TOA_API_ALLOW_EMPTY_SNAPSHOT",
+        False,
+    ):
+        raise RuntimeError(
+            "El consolidado contiene 0 registros. Por seguridad la API no "
+            "será vaciada. Para permitir una fotografía vacía configura "
+            "TOA_API_ALLOW_EMPTY_SNAPSHOT=true."
+        )
+
+    # Validación completa antes del primer POST.
+    for row_number, record in enumerate(records, start=1):
+        missing = [key for key in API_HEADERS if key not in record]
+        extras = [key for key in record if key not in API_HEADERS]
+        if missing or extras:
+            raise ValueError(
+                f"Registro {row_number} inválido. "
+                f"Faltantes={missing}; adicionales={extras}"
+            )
+        json.dumps(record, ensure_ascii=False, allow_nan=False)
+
+    payload_key = (os.getenv("TOA_API_PAYLOAD_KEY") or "").strip()
+    create_retries = max(
+        1,
+        int(os.getenv("TOA_API_CREATE_RETRIES", "1")),
+    )
+    if create_retries > 1 and not env_bool(
+        "TOA_API_ALLOW_CREATE_RETRIES",
+        False,
+    ):
+        print(
+            "[API] Se forzará TOA_API_CREATE_RETRIES=1 para evitar "
+            "duplicados ante respuestas perdidas."
+        )
+        create_retries = 1
+
+    delay_seconds = max(
+        0.0,
+        float(os.getenv("TOA_API_BATCH_DELAY_SECONDS", "0.2")),
+    )
+    empty_before_load = env_bool(
+        "TOA_API_EMPTY_BEFORE_LOAD",
+        True,
+    )
+    dry_run = env_bool("TOA_API_DRY_RUN", False)
+
+    total_records = len(records)
+    total_batches = (
+        (total_records + batch_size - 1) // batch_size
+        if total_records
+        else 0
+    )
+    started_at = now_cl()
+
+    plan = {
+        "modo": "SIMULACION" if dry_run else "REAL",
+        "vaciar_antes": empty_before_load,
+        "total_registros": total_records,
+        "lotes_totales": total_batches,
+        "tamano_lote": batch_size,
+        "payload_key": payload_key or None,
+        "url_creacion": create_url,
+        "inicio": started_at.isoformat(),
+    }
+    plan_path = os.path.join(failure_dir, "plan_publicacion_api.json")
+    with open(plan_path, "w", encoding="utf-8") as file:
+        json.dump(plan, file, ensure_ascii=False, indent=2)
+
+    print(
+        f"[API] Plan validado: {total_records} registros, "
+        f"{total_batches} lotes, máximo {batch_size} por POST."
+    )
+
+    if dry_run:
+        print(
+            f"[API] Simulación activa. No se ejecutó ningún POST. "
+            f"Plan: {plan_path}"
+        )
+        return {
+            **plan,
+            "registros_enviados": 0,
+            "lotes_exitosos": 0,
+            "termino": now_cl().isoformat(),
+        }
+
+    session = requests.Session()
+    session.headers.update(_toa_api_headers())
+
+    uploaded = 0
+    successful_batches = 0
+    batch_results = []
+
+    try:
+        if empty_before_load:
+            vaciar_tabla_toa_api(session)
+        else:
+            print(
+                "[API] TOA_API_EMPTY_BEFORE_LOAD=false: "
+                "no se vaciará la tabla."
+            )
+
+        for batch_number, start_index in enumerate(
+            range(0, total_records, batch_size),
+            start=1,
+        ):
+            batch_records = records[
+                start_index:start_index + batch_size
+            ]
+            payload = (
+                {payload_key: batch_records}
+                if payload_key
+                else batch_records
+            )
+
+            print(
+                f"[API] Lote {batch_number}/{total_batches} | "
+                f"registros {start_index + 1}-"
+                f"{start_index + len(batch_records)}"
+            )
+
+            try:
+                response = _post_api_json(
+                    session=session,
+                    url=create_url,
+                    payload=payload,
+                    operation=f"CREAR CITAS LOTE {batch_number}",
+                    retries=create_retries,
+                )
+            except Exception as exc:
+                failed_path = _save_failed_api_batch(
+                    failure_dir,
+                    batch_number,
+                    batch_records,
+                    exc,
+                )
+                raise RuntimeError(
+                    f"Falló el lote {batch_number}/{total_batches}. "
+                    f"Se habían enviado {uploaded}/{total_records} registros. "
+                    f"Lote guardado en: {failed_path}. Error: {exc!r}"
+                ) from exc
+
+            successful_batches += 1
+            uploaded += len(batch_records)
+            batch_results.append({
+                "lote": batch_number,
+                "registros": len(batch_records),
+                "http_status": response.status_code,
+                "acumulado": uploaded,
+            })
+
+            print(
+                f"[API] Lote {batch_number} confirmado | "
+                f"acumulado {uploaded}/{total_records}"
+            )
+
+            if delay_seconds > 0 and batch_number < total_batches:
+                time.sleep(delay_seconds)
+
+        result = {
+            **plan,
+            "registros_enviados": uploaded,
+            "lotes_exitosos": successful_batches,
+            "detalle_lotes": batch_results,
+            "termino": now_cl().isoformat(),
+        }
+        print(
+            f"[API] Publicación completa: {uploaded} registros en "
+            f"{successful_batches} lotes."
+        )
+        return result
+    finally:
+        session.close()
+
+
+
+def send_test_records_to_api(records: list[dict]):
+    """Compatibilidad con el modo de prueba de una sola descarga."""
+    output_dir = os.getenv("TOA_TEST_OUTPUT_DIR") or os.path.join(
+        os.getcwd(),
+        "salida_prueba_toa",
+    )
+    return publicar_toa_api_por_lotes(records, output_dir)
+
+
+def _find_single_test_record(inputs_records: list[dict]) -> dict:
+    """Selecciona el subgrupo configurado o, si no se indica, el primero activo."""
+    requested = (os.getenv("TOA_TEST_SUBGROUP") or "").strip().casefold()
+    if not requested:
+        return inputs_records[0]
+
+    for record in inputs_records:
+        candidates = {
+            str(record.get("Subgrupo TOA", "")).strip().casefold(),
+            str(record.get("Zona Subgrupo TOA", "")).strip().casefold(),
+            str(record.get("Nombre Archivo Completo", "")).strip().casefold(),
+        }
+        if requested in candidates:
+            return record
+
+    available = [record.get("Subgrupo TOA", "") for record in inputs_records]
+    raise ValueError(
+        f"No se encontró TOA_TEST_SUBGROUP='{os.getenv('TOA_TEST_SUBGROUP')}'. "
+        f"Subgrupos activos: {available}"
+    )
+
+
+def run_single_download_test():
+    """
+    Prueba controlada:
+      - procesa un único archivo local, si TOA_TEST_LOCAL_XLSX está definido; o
+      - inicia sesión y realiza una única descarga de TOA;
+      - filtra y transforma las columnas a API_HEADERS;
+      - guarda JSON y XLSX de revisión;
+      - NO modifica PostgreSQL ni Power Automate;
+      - NO envía a la API salvo que TOA_API_SEND_ENABLED=true.
+    """
+    load_dotenv()
+    validate_api_schema()
+
+    output_dir = os.getenv("TOA_TEST_OUTPUT_DIR") or os.path.join(
+        os.getcwd(),
+        "salida_prueba_toa",
+    )
+    ensure_dir(output_dir)
+
+    subgroup = (os.getenv("TOA_TEST_SUBGROUP") or "PRUEBA").strip()
+    zona_subgrupo = (os.getenv("TOA_TEST_ZONA_SUBGRUPO") or subgroup).strip()
+    local_xlsx = (os.getenv("TOA_TEST_LOCAL_XLSX") or "").strip()
+    downloaded_path = ""
+    page = None
+    context = None
+    browser = None
+    playwright = None
+
+    try:
+        if local_xlsx:
+            if not os.path.isfile(local_xlsx):
+                raise FileNotFoundError(
+                    f"No existe TOA_TEST_LOCAL_XLSX: {local_xlsx}"
+                )
+            downloaded_path = local_xlsx
+            print(f"[PRUEBA] Usando archivo local: {downloaded_path}")
+        else:
+            user = os.getenv("TOA_USERNAME")
+            password = os.getenv("TOA_PASSWORD")
+            ruta_inputs = os.getenv("RUTA_INPUTS_TOA")
+            missing = [
+                name for name, value in {
+                    "TOA_USERNAME": user,
+                    "TOA_PASSWORD": password,
+                    "RUTA_INPUTS_TOA": ruta_inputs,
+                }.items()
+                if not value
+            ]
+            if missing:
+                raise RuntimeError(
+                    f"Faltan variables para la descarga: {', '.join(missing)}"
+                )
+
+            inputs_records = load_inputs_toa(ruta_inputs)
+            if not inputs_records:
+                raise RuntimeError("No existen registros ACTIVOS en InputsTOA.xlsx")
+
+            record = _find_single_test_record(inputs_records)
+            subgroup = record["Subgrupo TOA"]
+            zona_subgrupo = record["Zona Subgrupo TOA"]
+            test_date = (
+                os.getenv("TOA_TEST_DATE")
+                or now_cl().date().isoformat()
+            )
+            # Valida YYYY-MM-DD antes de construir la URL.
+            datetime.strptime(test_date, "%Y-%m-%d")
+
+            x_user = os.getenv("TOA_XPATH_USER") or "/html/body/div/div/div/div/form/div[2]/div[1]/div[1]/div/input"
+            x_pass = os.getenv("TOA_XPATH_PASS") or "/html/body/div/div/div/div/form/div[2]/div[2]/div[1]/div/input"
+            x_btn = os.getenv("TOA_XPATH_BTN") or "/html/body/div/div/div/div/form/div[2]/div[5]/button"
+            x_btn_alt = os.getenv("TOA_XPATH_BTN_ALT") or "/html/body/div/div/div/div/form/div[2]/div[6]/button"
+            x_ready = os.getenv("TOA_XPATH_READY") or "/html/body/div[14]/div[1]/main/div/div[2]/div[3]/div[1]/div[3]/div[1]/div[2]/div[2]/div/div[2]/div[3]/div[2]/div[2]/div[5]/div[1]/button[3]/span"
+            x_avatar = os.getenv("TOA_XPATH_AVATAR") or "/html/body/div[14]/div[1]/app:global-header/header/div[5]/button/visuals:technician-avatar"
+            x_signout = os.getenv("TOA_XPATH_SIGNOUT") or "/html/body/div[26]/div[2]/app:global-header/div/ul/li[4]/a"
+
+            playwright = sync_playwright().start()
+            headless = env_bool("TOA_HEADLESS", False)
+            channel = (os.getenv("TOA_BROWSER_CHANNEL", "msedge") or "").strip()
+            launch_kwargs = {"headless": headless}
+            if channel.lower() not in {"", "chromium", "bundled"}:
+                launch_kwargs["channel"] = channel
+            if not headless:
+                launch_kwargs["args"] = ["--start-maximized"]
+
+            browser = playwright.chromium.launch(**launch_kwargs)
+            context = browser.new_context(
+                accept_downloads=True,
+                viewport=None if not headless else {"width": 1920, "height": 1080},
+                locale="es-CL",
+                timezone_id="America/Santiago",
+            )
+            context.set_default_timeout(60_000)
+            context.set_default_navigation_timeout(120_000)
+            page = context.new_page()
+
+            login_toa(
+                page,
+                user,
+                password,
+                x_user,
+                x_pass,
+                x_btn,
+                x_btn_alt,
+                x_ready,
+            )
+
+            download_dir = os.path.join(output_dir, "descarga")
+            ensure_dir(download_dir)
+            url = build_toa_url(record, test_date)
+            fallback_name = (
+                f"{test_date}_{safe_path_component(subgroup)}_"
+                f"{safe_path_component(record.get('downloadId', 'prueba'))}.xlsx"
+            )
+            print(
+                f"[PRUEBA] Descargando solo 1 archivo | fecha={test_date} | "
+                f"subgrupo={subgroup}"
+            )
+            downloaded_path = trigger_download(
+                page,
+                url,
+                download_dir,
+                fallback_name,
+                retries=1,
+            )
+
+            try:
+                safe_logout(page, x_avatar, x_signout)
+            except Exception as exc:
+                print(f"[PRUEBA] Advertencia al cerrar sesión: {exc!r}")
+
+        transformed_df = consume_downloaded_xlsx(
+            downloaded_path,
+            subgroup,
+            zona_subgrupo,
+            API_HEADERS,
+        )
+
+        rows = dataframe_to_rows(transformed_df)
+        records = dataframe_to_api_records(transformed_df)
+
+        output_xlsx = os.path.join(output_dir, "prueba_api_una_descarga.xlsx")
+        output_json = os.path.join(output_dir, "prueba_api_una_descarga.json")
+        write_snapshot_excel(output_xlsx, API_HEADERS, rows)
+        with open(output_json, "w", encoding="utf-8") as file:
+            json.dump(records, file, ensure_ascii=False, indent=2)
+
+        print("\n========== RESULTADO DE PRUEBA ==========")
+        print(f"Archivo procesado : {downloaded_path}")
+        print(f"Registros filtrados: {len(records)}")
+        print(f"Columnas API       : {len(API_HEADERS)}")
+        print(f"Salida Excel       : {output_xlsx}")
+        print(f"Salida JSON        : {output_json}")
+
+        if records:
+            print("\nPrimer registro que se enviaría a la API:")
+            print(json.dumps(records[0], ensure_ascii=False, indent=2))
+        else:
+            print("\nNo hubo actividades incluidas en ACTIVITY_TYPE_ALLOWED_VALUES.")
+
+        if env_bool("TOA_API_SEND_ENABLED", False):
+            send_test_records_to_api(records)
+            print("[API] Prueba enviada correctamente.")
+        else:
+            print(
+                "[API] Envío desactivado. Para enviarlo, configura "
+                "TOA_API_SEND_ENABLED=true. Usa TOA_API_DRY_RUN=true para simular."
+            )
+
+        return records
+
+    finally:
+        if context is not None:
+            try:
+                context.close()
+            except Exception:
+                pass
+        if browser is not None:
+            try:
+                browser.close()
+            except Exception:
+                pass
+        if playwright is not None:
+            try:
+                playwright.stop()
+            except Exception:
+                pass
 
 
 def main():
@@ -2422,18 +3216,9 @@ def main():
 
 
 if __name__ == "__main__":
-    
-    try:
-        # Ejemplo:
-        # df = pd.read_excel("archivo.xlsx")
-
-        # Si ya tienes el DataFrame creado, utiliza directamente:
-        cargar_dataframe_toa(
-            df=df,
-            tamano_lote=300,
-        )
-
-    except Exception as error:
-        print(f"El proceso terminó con error: {error}")
-        raise
-    main()
+    # Por defecto ejecuta el proceso completo con todos los Excel.
+    # Para volver a la prueba aislada: TOA_TEST_ONE_DOWNLOAD=true
+    if env_bool("TOA_TEST_ONE_DOWNLOAD", False):
+        run_single_download_test()
+    else:
+        main()
