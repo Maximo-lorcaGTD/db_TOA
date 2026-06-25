@@ -9,9 +9,15 @@ services:
       - .env
     environment:
       TZ: ${TZ:-America/Santiago}
+      RUTA_INPUTS_TOA: /data/InputsTOA.xlsx
+      RUTA_EXC_MONITOREO: /data/Monitoreo.xlsx
+      RUTA_BBDD_TOA: /data/BBDD_TOA.xlsx
+      TOA_RUNS_DIR: /data/toa_runs
+      DOWNLOAD_DIR: /data/toa_runs/downloads
       TOA_BROWSER_CHANNEL: ${TOA_BROWSER_CHANNEL:-chromium}
       TOA_HEADLESS: ${TOA_HEADLESS:-true}
       SCHEDULER_INTERVAL_MINUTES: ${SCHEDULER_INTERVAL_MINUTES:-30}
+      SCHEDULER_HEARTBEAT_SECONDS: ${SCHEDULER_HEARTBEAT_SECONDS:-60}
       RUN_ON_START: ${RUN_ON_START:-true}
       TOA_SCRIPT_PATH: ${TOA_SCRIPT_PATH:-/app/toa_proceso_mejorado.py}
       SCHEDULER_STATE_FILE: ${SCHEDULER_STATE_FILE:-/data/toa_scheduler_state.json}

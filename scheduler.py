@@ -55,6 +55,7 @@ def env_int(name: str, default: int, minimum: int = 1) -> int:
 TIMEZONE_NAME = os.getenv("TZ", "America/Santiago")
 TZ = ZoneInfo(TIMEZONE_NAME)
 INTERVAL_MINUTES = env_int("SCHEDULER_INTERVAL_MINUTES", 30)
+HEARTBEAT_SECONDS = env_int("SCHEDULER_HEARTBEAT_SECONDS", 60)
 RUN_ON_START = env_bool("RUN_ON_START", True)
 RUN_ONCE = env_bool("RUN_ONCE", False)
 STOP_ON_ERROR = env_bool("STOP_ON_ERROR", False)
@@ -151,7 +152,23 @@ def run_toa_process() -> int:
         cwd=str(SCRIPT_PATH.parent),
         env=os.environ.copy(),
     )
-    return_code = current_child.wait()
+    last_heartbeat = time.monotonic()
+    while True:
+        return_code = current_child.poll()
+        if return_code is not None:
+            break
+
+        if time.monotonic() - last_heartbeat >= HEARTBEAT_SECONDS:
+            write_state(
+                status="RUNNING",
+                current_run_started_at=started.isoformat(),
+                current_run_heartbeat_at=now_local().isoformat(),
+                last_error=None,
+            )
+            last_heartbeat = time.monotonic()
+
+        time.sleep(1.0)
+
     current_child = None
 
     finished = now_local()
