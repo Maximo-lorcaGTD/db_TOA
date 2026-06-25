@@ -1,8 +1,5 @@
 
 # Archivos de entorno
-.env
-.env.local
-.env.example
 
 # Python
 __pycache__/
@@ -19,7 +16,7 @@ __pycache__/
 
 # Virtual environment (venv/venv3)
 .venv/
-env/
+
 venv3/
 
 # Logs
