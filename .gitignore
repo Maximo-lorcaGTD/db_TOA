@@ -41,8 +41,8 @@ toa_proceso_mejorado (*).py
 *.bat
 
 # Data
-data/
-data.sql
+# data/
+# data.sql
 salida_prueba_toa/
 toa_runs/
 BBDD_TOA.xlsx
