@@ -21,7 +21,6 @@ from openpyxl import load_workbook, Workbook
 from openpyxl.utils import range_boundaries, get_column_letter
 from openpyxl.worksheet.table import Table, TableStyleInfo
 
-import base64
 import csv
 import io
 import json
@@ -1641,43 +1640,6 @@ def safe_logout(
         repr(last_error) if last_error else "No fue posible cerrar sesión"
     )
 
-def enviar_a_power_automate():
-    """
-    Lee el archivo consolidado final, lo convierte a Base64 y lo envía
-    al flujo de Power Automate para su carga en SharePoint.
-    """
-    ruta_local     = os.getenv("RUTA_BBDD_TOA")
-    url_webhook    = os.getenv("PA_WEBHOOK_URL")
-    nombre_destino = os.getenv("PA_DESTINATION_NAME")
-
-    if not all([ruta_local, url_webhook, nombre_destino]):
-        print("[WEBHOOK] Error: Faltan variables de configuración en .env")
-        return False
-
-    if not os.path.exists(ruta_local):
-        print(f"[WEBHOOK] Error: No se encontró el archivo para enviar en {ruta_local}")
-        return False
-
-    try:
-        print(f"[WEBHOOK] Iniciando envío de {nombre_destino}...")
-        with open(ruta_local, "rb") as file:
-            encoded_string = base64.b64encode(file.read()).decode("utf-8")
-
-        payload = {
-            "nombre_archivo": nombre_destino,
-            "contenido_base64": encoded_string,
-        }
-
-        response = requests.post(url_webhook, json=payload, timeout=120)
-        response.raise_for_status()
-
-        print("✅ [WEBHOOK] Archivo enviado exitosamente a Power Automate.")
-        return True
-    except Exception as e:
-        print(f"❌ [WEBHOOK] Error crítico en el envío: {e}")
-        return False
-
-
 # =========================
 # PostgreSQL snapshot helpers
 # =========================
@@ -2142,7 +2104,7 @@ def run_process(cleanup_state: dict):
 
     # Publicaciones finales. La API es el destino principal solicitado;
     # PostgreSQL queda opcional para mantener compatibilidad con el script anterior.
-    API_ENABLED = env_bool("TOA_API_ENABLED", False)
+    API_ENABLED = env_bool("TOA_API_ENABLED", True)
     PG_ENABLED = env_bool("PG_ENABLED", False)
 
     RUNS_DIR = os.getenv("TOA_RUNS_DIR") or os.path.join(os.path.dirname(RUTA_BBDD_TOA or "."), "toa_runs")
@@ -2432,35 +2394,56 @@ def run_process(cleanup_state: dict):
     write_snapshot_excel(RUTA_BBDD_TOA, API_HEADERS, rows)
     api_records = dataframe_to_api_records(df_consolidado)
 
-    api_ok = True
+    api_ok = False
     api_error = ""
     api_result = {
         "habilitada": API_ENABLED,
         "total_registros": len(api_records),
     }
+    api_summary_path = os.path.join(run_dir, "resultado_publicacion_api.json")
 
-    if API_ENABLED:
-        try:
-            api_result.update(
-                publicar_toa_api_por_lotes(
-                    records=api_records,
-                    failure_dir=run_dir,
-                )
+    try:
+        if not API_ENABLED:
+            raise RuntimeError(
+                "TOA_API_ENABLED=false: la publicacion API es obligatoria "
+                "para completar el proceso."
             )
-            api_summary_path = os.path.join(run_dir, "resultado_publicacion_api.json")
-            with open(api_summary_path, "w", encoding="utf-8") as file:
-                json.dump(api_result, file, ensure_ascii=False, indent=2)
-            print(f"[API] Resumen guardado en: {api_summary_path}")
-        except Exception as exc:
-            api_ok = False
-            api_error = repr(exc)
-            print(f"[API] ERROR: {api_error}", file=sys.stderr)
-    else:
-        print(
-            "[API] Publicación desactivada. Configura TOA_API_ENABLED=true "
-            "para vaciar y cargar la API por lotes."
+        api_result.update(
+            publicar_toa_api_por_lotes(
+                records=api_records,
+                failure_dir=run_dir,
+            )
         )
-
+        api_ok = api_result.get("estado_final") == "EXITOSO"
+        if not api_ok:
+            api_error = (
+                "La publicacion API no cargo registros: "
+                f"estado_final={api_result.get('estado_final')}"
+            )
+    except ApiPublicationError as exc:
+        api_result.update(exc.summary)
+        api_error = str(exc)
+        print(f"[API] ERROR: {api_error}", file=sys.stderr)
+    except Exception as exc:
+        api_error = repr(exc)
+        api_result.update({
+            "estado_final": "ERROR",
+            "registros_enviados": 0,
+            "lotes_procesados": 0,
+            "lotes_fallidos": 0,
+            "errores": [{"detalle_error": api_error}],
+            "termino": now_cl().isoformat(),
+        })
+        print(f"[API] ERROR: {api_error}", file=sys.stderr)
+        print_api_publication_summary(api_result)
+    finally:
+        api_result.setdefault("registros_enviados", 0)
+        api_result.setdefault("lotes_procesados", 0)
+        api_result.setdefault("lotes_fallidos", 0)
+        api_result.setdefault("estado_final", "EXITOSO" if api_ok else "ERROR")
+        with open(api_summary_path, "w", encoding="utf-8") as file:
+            json.dump(api_result, file, ensure_ascii=False, indent=2)
+        print(f"[API] Resumen guardado en: {api_summary_path}")
     # PostgreSQL se conserva como salida opcional. Ya no bloquea el uso de la API
     # cuando PG_ENABLED=false.
     postgres_ok = True
@@ -2490,22 +2473,13 @@ def run_process(cleanup_state: dict):
     elif not PG_ENABLED:
         print("[POSTGRESQL] Publicación desactivada mediante PG_ENABLED=false.")
 
-    webhook_ok = True
-    webhook_error = ""
-    if api_ok and postgres_ok and env_bool("PA_ENABLED", False):
-        webhook_ok = enviar_a_power_automate()
-        if not webhook_ok:
-            webhook_error = "Power Automate rechazó o no recibió el archivo."
-
     publication_errors = []
     if not api_ok:
         publication_errors.append(f"API: {api_error}")
     if not postgres_ok:
         publication_errors.append(f"PostgreSQL: {postgres_error}")
-    if not webhook_ok:
-        publication_errors.append(f"Power Automate: {webhook_error}")
 
-    publication_ok = api_ok and postgres_ok and webhook_ok
+    publication_ok = api_ok and postgres_ok
     try:
         update_last_row_fields_atomic(
             RUTA_EXC,
@@ -2605,6 +2579,61 @@ def _normalize_api_url(url: str) -> str:
     return url.rstrip("/")
 
 
+def _required_api_url(env_name: str) -> str:
+    url = _normalize_api_url(os.getenv(env_name, ""))
+    if not url:
+        raise RuntimeError(f"Falta variable de entorno {env_name}")
+    return url
+
+
+def _env_int(name: str, default: int, minimum: int = 1) -> int:
+    raw = os.getenv(name, str(default)).strip()
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} debe ser un numero entero: {raw!r}") from exc
+    if value < minimum:
+        raise RuntimeError(f"{name} debe ser igual o mayor que {minimum}")
+    return value
+
+
+def _env_float(name: str, default: float, minimum: float = 0.0) -> float:
+    raw = os.getenv(name, str(default)).strip()
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} debe ser numerico: {raw!r}") from exc
+    if value < minimum:
+        raise RuntimeError(f"{name} debe ser igual o mayor que {minimum}")
+    return value
+
+
+class ApiPostError(RuntimeError):
+    def __init__(
+        self,
+        operation: str,
+        detail: str,
+        status_code: int | None = None,
+        response_text: str = "",
+        url: str = "",
+        attempt: int = 0,
+    ):
+        self.operation = operation
+        self.detail = detail
+        self.status_code = status_code
+        self.response_text = response_text
+        self.url = url
+        self.attempt = attempt
+        http = status_code if status_code is not None else "SIN_RESPUESTA"
+        super().__init__(f"{operation} fallo | HTTP {http} | {detail}")
+
+
+class ApiPublicationError(RuntimeError):
+    def __init__(self, message: str, summary: dict):
+        self.summary = summary
+        super().__init__(message)
+
+
 def _toa_api_headers() -> dict[str, str]:
     """Construye los encabezados comunes para los endpoints TOA."""
     headers = {
@@ -2624,14 +2653,13 @@ def _toa_api_headers() -> dict[str, str]:
 
 
 def _api_response_preview(response: requests.Response, limit: int = 1500) -> str:
-    """Obtiene una respuesta breve, incluyendo JSON cuando está disponible."""
-    if not response.content:
+    """Obtiene una respuesta breve, incluyendo JSON cuando esta disponible."""
+    if not getattr(response, "content", b""):
         return "<sin contenido>"
     try:
         return json.dumps(response.json(), ensure_ascii=False)[:limit]
     except Exception:
-        return response.text[:limit]
-
+        return str(getattr(response, "text", ""))[:limit]
 
 
 def _post_api_json(
@@ -2641,20 +2669,12 @@ def _post_api_json(
     operation: str,
     retries: int = 1,
 ) -> requests.Response:
-    """
-    Ejecuta POST, valida HTTP y registra duración.
-
-    Para crear registros se recomienda retries=1, ya que el endpoint podría
-    haber procesado el lote aunque el cliente haya perdido la respuesta.
-    """
-    timeout = max(1, int(os.getenv("TOA_API_TIMEOUT", "120")))
-    retry_wait = max(
-        0.0,
-        float(os.getenv("TOA_API_RETRY_WAIT_SECONDS", "2")),
-    )
+    """Ejecuta POST con timeout, reintentos limitados y error estructurado."""
+    timeout = _env_int("TOA_API_TIMEOUT", 120, minimum=1)
+    retry_wait = _env_float("TOA_API_RETRY_WAIT_SECONDS", 2.0, minimum=0.0)
     retry_statuses = {408, 429, 500, 502, 503, 504}
     attempts = max(1, retries)
-    last_error = None
+    last_error: ApiPostError | None = None
 
     for attempt in range(1, attempts + 1):
         started = time.monotonic()
@@ -2664,9 +2684,24 @@ def _post_api_json(
                 json=payload,
                 timeout=timeout,
             )
+        except requests.RequestException as exc:
+            elapsed = time.monotonic() - started
+            last_error = ApiPostError(
+                operation=operation,
+                detail=f"Error de conexion o timeout: {exc!r}",
+                url=url,
+                attempt=attempt,
+            )
+            print(
+                f"[API][{operation}] intento {attempt}/{attempts} | "
+                f"HTTP SIN_RESPUESTA | {elapsed:.2f}s | {exc!r}",
+                file=sys.stderr,
+            )
+            if attempt >= attempts:
+                raise last_error from exc
+        else:
             elapsed = time.monotonic() - started
             preview = _api_response_preview(response)
-
             print(
                 f"[API][{operation}] intento {attempt}/{attempts} | "
                 f"HTTP {response.status_code} | {elapsed:.2f}s | {preview}"
@@ -2675,44 +2710,27 @@ def _post_api_json(
             if 200 <= response.status_code < 300:
                 return response
 
-            error = RuntimeError(
-                f"{operation} rechazado con HTTP "
-                f"{response.status_code}: {preview}"
+            last_error = ApiPostError(
+                operation=operation,
+                detail="Respuesta HTTP no exitosa",
+                status_code=response.status_code,
+                response_text=preview,
+                url=url,
+                attempt=attempt,
             )
-            last_error = error
-
-            if (
-                response.status_code not in retry_statuses
-                or attempt >= attempts
-            ):
-                raise error
-
-        except requests.RequestException as exc:
-            last_error = exc
-            if attempt >= attempts:
-                raise RuntimeError(
-                    f"Error de red durante {operation}: {exc!r}"
-                ) from exc
+            if response.status_code not in retry_statuses or attempt >= attempts:
+                raise last_error
 
         if attempt < attempts and retry_wait > 0:
             time.sleep(retry_wait * attempt)
 
-    raise RuntimeError(
-        f"No fue posible completar {operation}: {last_error!r}"
-    )
-
+    raise last_error or ApiPostError(operation, "Error desconocido", url=url)
 
 
 def vaciar_tabla_toa_api(session: requests.Session) -> requests.Response:
-    """Vacía la tabla remota antes de publicar la nueva fotografía."""
-    url = _normalize_api_url(
-        os.getenv("TOA_API_EMPTY_URL")
-        or "http://216.155.78.14/api/toa/vaciar-tabla-toa"
-    )
-    if not url:
-        raise RuntimeError("Falta TOA_API_EMPTY_URL")
-
-    retries = int(os.getenv("TOA_API_EMPTY_RETRIES", "3"))
+    """Vacia la tabla remota antes de publicar la nueva fotografia."""
+    url = _required_api_url("TOA_API_EMPTY_URL")
+    retries = _env_int("TOA_API_EMPTY_RETRIES", 3, minimum=1)
     print(f"[API] Vaciando tabla mediante: {url}")
     return _post_api_json(
         session=session,
@@ -2726,10 +2744,12 @@ def vaciar_tabla_toa_api(session: requests.Session) -> requests.Response:
 def _save_failed_api_batch(
     failure_dir: str,
     batch_number: int,
+    start_record: int,
+    end_record: int,
     batch_records: list[dict],
-    error: Exception,
+    error_info: dict,
 ) -> str:
-    """Guarda el lote fallido para revisión o reenvío manual."""
+    """Guarda el lote fallido para revision o reenvio manual."""
     ensure_dir(failure_dir)
     path = os.path.join(
         failure_dir,
@@ -2737,8 +2757,9 @@ def _save_failed_api_batch(
     )
     payload = {
         "lote": batch_number,
+        "rango_registros": [start_record, end_record],
         "cantidad_registros": len(batch_records),
-        "error": repr(error),
+        "error": error_info,
         "registros": batch_records,
     }
     with open(path, "w", encoding="utf-8") as file:
@@ -2746,85 +2767,86 @@ def _save_failed_api_batch(
     return path
 
 
+def _api_error_info(error: Exception) -> dict:
+    return {
+        "http_status": getattr(error, "status_code", None),
+        "respuesta_servidor": getattr(error, "response_text", ""),
+        "detalle_error": getattr(error, "detail", repr(error)),
+    }
+
+
+def _api_summary(
+    plan: dict,
+    uploaded: int,
+    successful_batches: int,
+    processed_batches: int,
+    failed_batches: int,
+    final_state: str,
+    errors: list[dict] | None = None,
+    batch_results: list[dict] | None = None,
+) -> dict:
+    return {
+        **plan,
+        "registros_enviados": uploaded,
+        "lotes_exitosos": successful_batches,
+        "lotes_procesados": processed_batches,
+        "lotes_fallidos": failed_batches,
+        "estado_final": final_state,
+        "errores": errors or [],
+        "detalle_lotes": batch_results or [],
+        "termino": now_cl().isoformat(),
+    }
+
+
+def print_api_publication_summary(summary: dict) -> None:
+    print(
+        "[API][RESUMEN] "
+        f"extraidos={summary.get('total_registros', 0)} | "
+        f"enviados={summary.get('registros_enviados', 0)} | "
+        f"lotes_procesados={summary.get('lotes_procesados', 0)} | "
+        f"lotes_fallidos={summary.get('lotes_fallidos', 0)} | "
+        f"estado={summary.get('estado_final')}"
+    )
+
 
 def publicar_toa_api_por_lotes(
     records: list[dict],
     failure_dir: str,
 ) -> dict:
     """
-    Publica la fotografía completa en la API TOA.
+    Publica la fotografia completa en la API TOA.
 
-    La tabla solo se vacía después de validar todos los registros.
+    Orden obligatorio: validar registros, vaciar tabla y luego crear citas por
+    lotes. Si un lote falla, se detiene el envio y se marca la publicacion como
+    fallida.
     """
     validate_api_schema()
     ensure_dir(failure_dir)
 
-    create_url = _normalize_api_url(
-        os.getenv("TOA_API_CREATE_URL")
-        or os.getenv("TOA_API_URL")
-        or "http://216.155.78.14/api/toa/crear-cita-toa"
-    )
-    if not create_url:
-        raise RuntimeError("Falta TOA_API_CREATE_URL")
+    empty_url = _required_api_url("TOA_API_EMPTY_URL")
+    create_url = _required_api_url("TOA_API_CREATE_URL")
+    batch_size = _env_int("TOA_API_BATCH_SIZE", 300, minimum=1)
 
-    configured_batch_size = int(
-        os.getenv("TOA_API_BATCH_SIZE", "400")
-    )
-    if configured_batch_size <= 0:
-        raise ValueError("TOA_API_BATCH_SIZE debe ser mayor que 0")
-
-    batch_size = min(configured_batch_size, 400)
-    if configured_batch_size > 400:
-        print(
-            f"[API] TOA_API_BATCH_SIZE={configured_batch_size} supera "
-            "el máximo; se utilizarán lotes de 400."
-        )
-
-    # Evita destruir la fotografía vigente por una transformación sin filas.
-    if not records and not env_bool(
-        "TOA_API_ALLOW_EMPTY_SNAPSHOT",
-        False,
-    ):
+    if not records and not env_bool("TOA_API_ALLOW_EMPTY_SNAPSHOT", False):
         raise RuntimeError(
             "El consolidado contiene 0 registros. Por seguridad la API no "
-            "será vaciada. Para permitir una fotografía vacía configura "
+            "sera vaciada. Para permitir una fotografia vacia configura "
             "TOA_API_ALLOW_EMPTY_SNAPSHOT=true."
         )
 
-    # Validación completa antes del primer POST.
     for row_number, record in enumerate(records, start=1):
         missing = [key for key in API_HEADERS if key not in record]
         extras = [key for key in record if key not in API_HEADERS]
         if missing or extras:
             raise ValueError(
-                f"Registro {row_number} inválido. "
+                f"Registro {row_number} invalido. "
                 f"Faltantes={missing}; adicionales={extras}"
             )
         json.dumps(record, ensure_ascii=False, allow_nan=False)
 
     payload_key = (os.getenv("TOA_API_PAYLOAD_KEY") or "").strip()
-    create_retries = max(
-        1,
-        int(os.getenv("TOA_API_CREATE_RETRIES", "1")),
-    )
-    if create_retries > 1 and not env_bool(
-        "TOA_API_ALLOW_CREATE_RETRIES",
-        False,
-    ):
-        print(
-            "[API] Se forzará TOA_API_CREATE_RETRIES=1 para evitar "
-            "duplicados ante respuestas perdidas."
-        )
-        create_retries = 1
-
-    delay_seconds = max(
-        0.0,
-        float(os.getenv("TOA_API_BATCH_DELAY_SECONDS", "0.2")),
-    )
-    empty_before_load = env_bool(
-        "TOA_API_EMPTY_BEFORE_LOAD",
-        True,
-    )
+    create_retries = _env_int("TOA_API_CREATE_RETRIES", 2, minimum=1)
+    delay_seconds = _env_float("TOA_API_BATCH_DELAY_SECONDS", 0.2, minimum=0.0)
     dry_run = env_bool("TOA_API_DRY_RUN", False)
 
     total_records = len(records)
@@ -2837,11 +2859,11 @@ def publicar_toa_api_por_lotes(
 
     plan = {
         "modo": "SIMULACION" if dry_run else "REAL",
-        "vaciar_antes": empty_before_load,
         "total_registros": total_records,
         "lotes_totales": total_batches,
         "tamano_lote": batch_size,
         "payload_key": payload_key or None,
+        "url_vaciado": empty_url,
         "url_creacion": create_url,
         "inicio": started_at.isoformat(),
     }
@@ -2851,54 +2873,68 @@ def publicar_toa_api_por_lotes(
 
     print(
         f"[API] Plan validado: {total_records} registros, "
-        f"{total_batches} lotes, máximo {batch_size} por POST."
+        f"{total_batches} lotes, {batch_size} por POST."
     )
 
     if dry_run:
-        print(
-            f"[API] Simulación activa. No se ejecutó ningún POST. "
-            f"Plan: {plan_path}"
+        summary = _api_summary(
+            plan,
+            uploaded=0,
+            successful_batches=0,
+            processed_batches=0,
+            failed_batches=0,
+            final_state="SIMULADO",
         )
-        return {
-            **plan,
-            "registros_enviados": 0,
-            "lotes_exitosos": 0,
-            "termino": now_cl().isoformat(),
-        }
+        print(f"[API] Simulacion activa. No se ejecuto ningun POST. Plan: {plan_path}")
+        print_api_publication_summary(summary)
+        return summary
 
     session = requests.Session()
     session.headers.update(_toa_api_headers())
 
     uploaded = 0
     successful_batches = 0
-    batch_results = []
+    processed_batches = 0
+    failed_batches = 0
+    batch_results: list[dict] = []
+    errors: list[dict] = []
 
     try:
-        if empty_before_load:
-            vaciar_tabla_toa_api(session)
-        else:
-            print(
-                "[API] TOA_API_EMPTY_BEFORE_LOAD=false: "
-                "no se vaciará la tabla."
+        try:
+            empty_response = vaciar_tabla_toa_api(session)
+            plan["vaciado_http_status"] = empty_response.status_code
+        except Exception as exc:
+            error_info = _api_error_info(exc)
+            error_info.update({"etapa": "vaciado", "lote": None})
+            errors.append(error_info)
+            summary = _api_summary(
+                plan,
+                uploaded=uploaded,
+                successful_batches=successful_batches,
+                processed_batches=processed_batches,
+                failed_batches=failed_batches,
+                final_state="ERROR_VACIADO",
+                errors=errors,
+                batch_results=batch_results,
             )
+            print_api_publication_summary(summary)
+            raise ApiPublicationError(
+                "No fue posible vaciar la tabla TOA; no se enviaran lotes.",
+                summary,
+            ) from exc
 
         for batch_number, start_index in enumerate(
             range(0, total_records, batch_size),
             start=1,
         ):
-            batch_records = records[
-                start_index:start_index + batch_size
-            ]
-            payload = (
-                {payload_key: batch_records}
-                if payload_key
-                else batch_records
-            )
+            batch_records = records[start_index:start_index + batch_size]
+            start_record = start_index + 1
+            end_record = start_index + len(batch_records)
+            payload = {payload_key: batch_records} if payload_key else batch_records
 
             print(
                 f"[API] Lote {batch_number}/{total_batches} | "
-                f"registros {start_index + 1}-"
-                f"{start_index + len(batch_records)}"
+                f"registros {start_record}-{end_record}"
             )
 
             try:
@@ -2910,22 +2946,55 @@ def publicar_toa_api_por_lotes(
                     retries=create_retries,
                 )
             except Exception as exc:
+                failed_batches += 1
+                processed_batches = successful_batches + failed_batches
+                error_info = _api_error_info(exc)
+                error_info.update({
+                    "etapa": "creacion",
+                    "lote": batch_number,
+                    "rango_registros": [start_record, end_record],
+                })
                 failed_path = _save_failed_api_batch(
                     failure_dir,
                     batch_number,
+                    start_record,
+                    end_record,
                     batch_records,
-                    exc,
+                    error_info,
                 )
-                raise RuntimeError(
-                    f"Falló el lote {batch_number}/{total_batches}. "
-                    f"Se habían enviado {uploaded}/{total_records} registros. "
-                    f"Lote guardado en: {failed_path}. Error: {exc!r}"
+                error_info["archivo_lote_fallido"] = failed_path
+                errors.append(error_info)
+                print(
+                    "[API][ERROR LOTE] "
+                    f"lote={batch_number}/{total_batches} | "
+                    f"rango={start_record}-{end_record} | "
+                    f"http={error_info.get('http_status')} | "
+                    f"respuesta={error_info.get('respuesta_servidor') or '<sin respuesta>'} | "
+                    f"detalle={error_info.get('detalle_error')}",
+                    file=sys.stderr,
+                )
+                summary = _api_summary(
+                    plan,
+                    uploaded=uploaded,
+                    successful_batches=successful_batches,
+                    processed_batches=processed_batches,
+                    failed_batches=failed_batches,
+                    final_state="ERROR_LOTE",
+                    errors=errors,
+                    batch_results=batch_results,
+                )
+                print_api_publication_summary(summary)
+                raise ApiPublicationError(
+                    f"Fallo el lote {batch_number}/{total_batches}; se detuvo la carga.",
+                    summary,
                 ) from exc
 
             successful_batches += 1
+            processed_batches += 1
             uploaded += len(batch_records)
             batch_results.append({
                 "lote": batch_number,
+                "rango_registros": [start_record, end_record],
                 "registros": len(batch_records),
                 "http_status": response.status_code,
                 "acumulado": uploaded,
@@ -2939,22 +3008,20 @@ def publicar_toa_api_por_lotes(
             if delay_seconds > 0 and batch_number < total_batches:
                 time.sleep(delay_seconds)
 
-        result = {
-            **plan,
-            "registros_enviados": uploaded,
-            "lotes_exitosos": successful_batches,
-            "detalle_lotes": batch_results,
-            "termino": now_cl().isoformat(),
-        }
-        print(
-            f"[API] Publicación completa: {uploaded} registros en "
-            f"{successful_batches} lotes."
+        summary = _api_summary(
+            plan,
+            uploaded=uploaded,
+            successful_batches=successful_batches,
+            processed_batches=processed_batches,
+            failed_batches=failed_batches,
+            final_state="EXITOSO",
+            errors=errors,
+            batch_results=batch_results,
         )
-        return result
+        print_api_publication_summary(summary)
+        return summary
     finally:
         session.close()
-
-
 
 def send_test_records_to_api(records: list[dict]):
     """Compatibilidad con el modo de prueba de una sola descarga."""
@@ -2994,7 +3061,7 @@ def run_single_download_test():
       - inicia sesión y realiza una única descarga de TOA;
       - filtra y transforma las columnas a API_HEADERS;
       - guarda JSON y XLSX de revisión;
-      - NO modifica PostgreSQL ni Power Automate;
+      - NO modifica PostgreSQL;
       - NO envía a la API salvo que TOA_API_SEND_ENABLED=true.
     """
     load_dotenv()

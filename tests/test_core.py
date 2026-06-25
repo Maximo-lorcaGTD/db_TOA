@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sys
 import unittest
 from datetime import datetime
@@ -96,6 +97,107 @@ class ToaTransformTests(unittest.TestCase):
             ensure_ascii=False,
             allow_nan=False,
         )
+
+
+class FakeApiResponse:
+    def __init__(self, status_code: int, payload: dict | None = None) -> None:
+        self.status_code = status_code
+        self._payload = payload or {"ok": True}
+        self.text = json.dumps(self._payload, ensure_ascii=False)
+        self.content = self.text.encode("utf-8")
+
+    def json(self) -> dict:
+        return self._payload
+
+
+class FakeApiSession:
+    def __init__(self, statuses: list[int]) -> None:
+        self.statuses = statuses
+        self.headers: dict[str, str] = {}
+        self.calls: list[dict] = []
+        self.closed = False
+
+    def post(self, url: str, json=None, timeout=None):
+        self.calls.append({"url": url, "json": json, "timeout": timeout})
+        status = self.statuses.pop(0)
+        payload = {"ok": 200 <= status < 300, "status": status}
+        return FakeApiResponse(status, payload)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class ToaApiPublicationTests(unittest.TestCase):
+    def make_records(self, total: int) -> list[dict]:
+        return [
+            {key: f"{index}-{key}" for key in toa.API_HEADERS}
+            for index in range(total)
+        ]
+
+    def api_env(self) -> dict[str, str]:
+        return {
+            "TOA_API_EMPTY_URL": "http://api.local/vaciar",
+            "TOA_API_CREATE_URL": "http://api.local/crear",
+            "TOA_API_BATCH_SIZE": "300",
+            "TOA_API_TIMEOUT": "30",
+            "TOA_API_BATCH_DELAY_SECONDS": "0",
+            "TOA_API_EMPTY_RETRIES": "1",
+            "TOA_API_CREATE_RETRIES": "1",
+            "TOA_API_RETRY_WAIT_SECONDS": "0",
+            "TOA_API_DRY_RUN": "false",
+            "TOA_API_PAYLOAD_KEY": "",
+        }
+
+    def test_api_publication_empties_then_sends_batches(self) -> None:
+        failure_dir = TEST_TMP_DIR / "api_success"
+        self.addCleanup(lambda: shutil.rmtree(failure_dir, ignore_errors=True))
+        fake_session = FakeApiSession([200, 201, 201, 201])
+
+        with patch.dict(os.environ, self.api_env(), clear=False):
+            with patch.object(toa.requests, "Session", lambda: fake_session):
+                result = toa.publicar_toa_api_por_lotes(
+                    self.make_records(650),
+                    str(failure_dir),
+                )
+
+        self.assertTrue(fake_session.closed)
+        self.assertEqual([call["url"] for call in fake_session.calls], [
+            "http://api.local/vaciar",
+            "http://api.local/crear",
+            "http://api.local/crear",
+            "http://api.local/crear",
+        ])
+        self.assertEqual(
+            [len(call["json"]) for call in fake_session.calls[1:]],
+            [300, 300, 50],
+        )
+        self.assertEqual(result["registros_enviados"], 650)
+        self.assertEqual(result["lotes_procesados"], 3)
+        self.assertEqual(result["lotes_fallidos"], 0)
+        self.assertEqual(result["estado_final"], "EXITOSO")
+
+    def test_api_publication_stops_on_failed_batch(self) -> None:
+        failure_dir = TEST_TMP_DIR / "api_failure"
+        self.addCleanup(lambda: shutil.rmtree(failure_dir, ignore_errors=True))
+        fake_session = FakeApiSession([200, 201, 500])
+
+        with patch.dict(os.environ, self.api_env(), clear=False):
+            with patch.object(toa.requests, "Session", lambda: fake_session):
+                with self.assertRaises(toa.ApiPublicationError) as captured:
+                    toa.publicar_toa_api_por_lotes(
+                        self.make_records(650),
+                        str(failure_dir),
+                    )
+
+        summary = captured.exception.summary
+        self.assertEqual(len(fake_session.calls), 3)
+        self.assertEqual(summary["registros_enviados"], 300)
+        self.assertEqual(summary["lotes_procesados"], 2)
+        self.assertEqual(summary["lotes_fallidos"], 1)
+        self.assertEqual(summary["estado_final"], "ERROR_LOTE")
+        self.assertEqual(summary["errores"][0]["lote"], 2)
+        self.assertEqual(summary["errores"][0]["rango_registros"], [301, 600])
+        self.assertTrue((failure_dir / "lote_api_fallido_0002.json").is_file())
 
 
 class SchedulerTests(unittest.TestCase):

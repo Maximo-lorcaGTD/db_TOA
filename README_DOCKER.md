@@ -238,7 +238,7 @@ docker rm toa-scheduler
 - No subas `.env`.
 - No subas `data/`.
 - No subas Excel con datos reales.
-- No guardes usuarios, passwords, tokens ni webhooks en el codigo.
+- No guardes usuarios, passwords, tokens ni claves de API en el codigo.
 - Usa GitHub Actions solo para construir la imagen, no para ejecutar el proceso real contra TOA.
 
 ## Errores comunes

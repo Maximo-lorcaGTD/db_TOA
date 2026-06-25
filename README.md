@@ -2,7 +2,7 @@
 
 Este proyecto automatiza el ingreso a Oracle Field Service (TOA), descarga los archivos correspondientes a las fechas y secciones configuradas, lee cada archivo, consolida la información en un único Excel y luego elimina los archivos temporales descargados.
 
-La solución utiliza **Playwright con Microsoft Edge**. No utiliza Selenium ni EdgeDriver. PostgreSQL, API TOA y Power Automate quedan como salidas opcionales configurables por `.env`.
+La solucion utiliza **Playwright con Microsoft Edge**. No utiliza Selenium ni EdgeDriver. La publicacion final se realiza directamente contra la API TOA; PostgreSQL queda como salida opcional configurable por `.env`.
 
 ## Flujo de ejecución
 
@@ -21,9 +21,9 @@ Consolidación de todas las filas en memoria
         ↓
 Creación o reemplazo del Excel consolidado
         ↓
-Envío opcional a Power Automate
+POST /api/toa/vaciar-tabla-toa
         ↓
-Registro de la ejecución y cierre de sesión
+POST /api/toa/crear-cita-toa por lotes
 ```
 
 Cada archivo descargado se utiliza únicamente como archivo temporal. Después de leerlo correctamente, el script lo elimina antes de continuar con la siguiente descarga.
@@ -95,11 +95,17 @@ TOA_DAYS_BACK=3
 TOA_DAYS_FORWARD=14
 
 # =====================================
-# Power Automate
+# API TOA
 # =====================================
-PA_ENABLED=true
-PA_WEBHOOK_URL=PEGA_AQUI_UN_WEBHOOK_VIGENTE
-PA_DESTINATION_NAME=BBDD_TOA.xlsx
+TOA_API_ENABLED=true
+TOA_API_EMPTY_URL=http://216.155.78.14/api/toa/vaciar-tabla-toa
+TOA_API_CREATE_URL=http://216.155.78.14/api/toa/crear-cita-toa
+TOA_API_BATCH_SIZE=300
+TOA_API_TIMEOUT=120
+TOA_API_EMPTY_RETRIES=3
+TOA_API_CREATE_RETRIES=2
+TOA_API_RETRY_WAIT_SECONDS=2
+TOA_API_DRY_RUN=false
 
 # =====================================
 # Limpieza
@@ -177,15 +183,15 @@ Cuando todas las descargas terminan correctamente, el script crea o reemplaza el
 RUTA_BBDD_TOA=C:\RUTA\BBDD_TOA.xlsx
 ```
 
-Este archivo contiene la fotografía completa y actual obtenida durante la ejecución.
+Este archivo contiene la fotografia completa y actual obtenida durante la ejecucion.
 
 El consolidado final no se elimina inmediatamente, porque se utiliza para:
 
 - mantener una copia consolidada local;
-- enviarlo a Power Automate;
+- publicarlo directamente en la API TOA;
 - reemplazar el archivo utilizado posteriormente en SharePoint u otro destino.
 
-## Control de ejecución incompleta
+## Control de ejecucion incompleta
 
 El script compara:
 
@@ -195,29 +201,29 @@ El script compara:
 - archivos con datos;
 - errores de descarga o lectura.
 
-Si falta un archivo o se produce un error bloqueante, la ejecución se marca como incompleta y no debe reemplazar el consolidado vigente.
+Si falta un archivo o se produce un error bloqueante, la ejecucion se marca como incompleta y no debe reemplazar el consolidado vigente.
 
-## Power Automate
+## API TOA
 
-Cuando esta variable está habilitada:
+Despues de generar el consolidado y validar todos los registros, el proceso ejecuta obligatoriamente:
 
-```env
-PA_ENABLED=true
+```text
+POST /api/toa/vaciar-tabla-toa
+        ↓
+POST /api/toa/crear-cita-toa por lotes
 ```
 
-el consolidado se convierte a Base64 y se envía al webhook configurado en:
+Las URLs se configuran en `.env`:
 
 ```env
-PA_WEBHOOK_URL=
+TOA_API_EMPTY_URL=http://216.155.78.14/api/toa/vaciar-tabla-toa
+TOA_API_CREATE_URL=http://216.155.78.14/api/toa/crear-cita-toa
+TOA_API_BATCH_SIZE=300
 ```
 
-Para ejecutar el proceso sin enviar el archivo a Power Automate:
+Si falla el vaciado, no se envia ningun lote. Si falla un lote, el proceso detiene la carga, registra el numero de lote, rango de registros, HTTP recibido, respuesta del servidor y guarda el lote en `TOA_RUNS_DIR` para revision.
 
-```env
-PA_ENABLED=false
-```
-
-Por seguridad, no guardes el archivo `.env` en repositorios Git ni compartas públicamente el webhook, usuario o contraseña.
+Por seguridad, no guardes el archivo `.env` en repositorios Git ni compartas publicamente usuarios, contrasenas, tokens o claves de API.
 
 ## Archivo de monitoreo
 
@@ -298,7 +304,7 @@ C:\RUTA\PROYECTO
 
 Configura el desencadenador para repetirse cada 30 minutos.
 
-Antes de programarlo, comprueba manualmente que una ejecución completa termine correctamente.
+Antes de programarlo, comprueba manualmente que una ejecucion completa termine correctamente.
 
 ## Docker y GitHub Actions
 
@@ -366,9 +372,8 @@ Verifica que no esté abierto en Excel y que el usuario que ejecuta el script te
 ## Seguridad
 
 - No publiques el archivo `.env`.
+- No compartas publicamente usuarios, contrasenas, tokens ni claves de API.
 - No guardes contraseñas dentro del código Python.
-- No compartas públicamente el webhook de Power Automate.
-- Si un webhook se expone, reemplázalo por uno nuevo.
 - Utiliza una cuenta TOA con los permisos mínimos necesarios.
 
 ## Resultado esperado
@@ -378,8 +383,8 @@ Una ejecución exitosa debe finalizar con un resumen parecido a:
 ```text
 [RESUMEN] Esperados: 272 | Descargados: 272
 [CONSOLIDADO] Archivos con datos: 210 | Archivos vacíos: 62 | Filas: 15430
-[WEBHOOK] Archivo enviado exitosamente a Power Automate
----- EJECUCIÓN COMPLETA ----
+[API][RESUMEN] extraidos=15430 | enviados=15430 | lotes_procesados=52 | lotes_fallidos=0 | estado=EXITOSO
+---- EJECUCION COMPLETA Y PUBLICADA ----
 ```
 
 Las cantidades son referenciales y dependen del rango de fechas y de las secciones activas en `InputsTOA.xlsx`.
